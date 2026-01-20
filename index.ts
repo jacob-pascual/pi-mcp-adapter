@@ -55,25 +55,33 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   });
   
   pi.on("session_start", async (_event, ctx) => {
+    // Non-blocking init - Pi starts immediately, MCP connects in background
     initPromise = initializeMcp(pi, ctx);
-    state = await initPromise;
-    initPromise = null;
     
-    // Set up callback for auto-reconnect to update metadata
-    state.lifecycle.setReconnectCallback((serverName) => {
-      if (state) {
-        updateServerMetadata(state, serverName);
+    initPromise.then(s => {
+      state = s;
+      initPromise = null;
+      
+      // Set up callback for auto-reconnect to update metadata
+      s.lifecycle.setReconnectCallback((serverName) => {
+        if (state) {
+          updateServerMetadata(state, serverName);
+        }
+      });
+      
+      // Update status bar when ready
+      if (ctx.hasUI) {
+        const totalTools = [...s.registeredTools.values()].flat().length;
+        if (totalTools > 0) {
+          ctx.ui.setStatus("mcp", ctx.ui.theme.fg("accent", `MCP: ${totalTools} tools`));
+        } else {
+          ctx.ui.setStatus("mcp", "");
+        }
       }
+    }).catch(err => {
+      console.error("MCP initialization failed:", err);
+      initPromise = null;
     });
-    
-    if (ctx.hasUI) {
-      const totalTools = [...state.registeredTools.values()].flat().length;
-      if (totalTools > 0) {
-        ctx.ui.setStatus("mcp", ctx.ui.theme.fg("accent", `MCP: ${totalTools} tools`));
-      } else {
-        ctx.ui.setStatus("mcp", "");
-      }
-    }
   });
   
   pi.on("session_shutdown", async () => {
@@ -95,6 +103,15 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   pi.registerCommand("mcp", {
     description: "Show MCP server status",
     handler: async (args, ctx) => {
+      // Wait for init if still in progress
+      if (!state && initPromise) {
+        try {
+          state = await initPromise;
+        } catch {
+          if (ctx.hasUI) ctx.ui.notify("MCP initialization failed", "error");
+          return;
+        }
+      }
       if (!state) {
         if (ctx.hasUI) ctx.ui.notify("MCP not initialized", "error");
         return;
@@ -128,6 +145,15 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         return;
       }
       
+      // Wait for init if still in progress
+      if (!state && initPromise) {
+        try {
+          state = await initPromise;
+        } catch {
+          if (ctx.hasUI) ctx.ui.notify("MCP initialization failed", "error");
+          return;
+        }
+      }
       if (!state) {
         if (ctx.hasUI) ctx.ui.notify("MCP not initialized", "error");
         return;
@@ -173,6 +199,17 @@ Mode: tool (call) > describe > search > server (list) > nothing (status)`,
       includeSchemas?: boolean;
       server?: string;
     }) {
+      // Wait for init if still in progress
+      if (!state && initPromise) {
+        try {
+          state = await initPromise;
+        } catch {
+          return {
+            content: [{ type: "text", text: "MCP initialization failed" }],
+            details: { error: "init_failed" },
+          };
+        }
+      }
       if (!state) {
         return {
           content: [{ type: "text", text: "MCP not initialized" }],
@@ -827,11 +864,12 @@ async function reconnectServers(
       
       state.registeredTools.set(name, toolNames);
       
-      // Update tool metadata for searching
+      // Update tool metadata for searching (include inputSchema for describe/errors)
       const metadata: ToolMetadata[] = connection.tools.map(tool => ({
         name: formatToolName(tool.name, name, prefix),
         originalName: tool.name,
         description: tool.description ?? "",
+        inputSchema: tool.inputSchema,
       }));
       for (const resource of connection.resources) {
         if (definition.exposeResources !== false) {
