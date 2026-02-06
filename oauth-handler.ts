@@ -468,7 +468,16 @@ export async function runBrowserAuthFlow(
   const redirectUrl = new URL(`http://127.0.0.1:${cb.port}/callback`);
 
   try {
-    // 5. Build client information
+    // 5. Determine scope: use explicit config, or fall back to resource metadata scopes
+    const scope = config.scope
+      ?? resourceMetadata?.scopes_supported?.join(" ")
+      ?? undefined;
+
+    if (scope) {
+      onStatus?.(`Requesting scopes: ${scope}`);
+    }
+
+    // 6. Build client information
     let clientInfo: OAuthClientInformationMixed;
     const savedClientInfo = loadClientInfo(serverName);
 
@@ -488,7 +497,7 @@ export async function runBrowserAuthFlow(
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
         client_name: `pi-mcp-${serverName}`,
-        scope: config.scope,
+        scope,
       };
       const registered = await registerClient(authServerUrl, {
         metadata,
@@ -503,13 +512,13 @@ export async function runBrowserAuthFlow(
       );
     }
 
-    // 6. Determine resource URL for RFC 8707 (needed in both authz and token requests)
+    // 7. Determine resource URL for RFC 8707 (needed in both authz and token requests)
     let resource: URL | undefined;
     if (resourceMetadata?.resource) {
       resource = new URL(resourceMetadata.resource);
     }
 
-    // 7. Start authorization with PKCE
+    // 8. Start authorization with PKCE
     onStatus?.("Starting authorization flow...");
     const { authorizationUrl, codeVerifier } = await startAuthorization(
       authServerUrl,
@@ -517,7 +526,7 @@ export async function runBrowserAuthFlow(
         metadata,
         clientInformation: clientInfo,
         redirectUrl,
-        scope: config.scope,
+        scope,
         resource,
       }
     );
