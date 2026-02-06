@@ -66,6 +66,10 @@ export interface ServerEntry {
   auth?: "oauth" | "bearer";
   bearerToken?: string;
   bearerTokenEnv?: string;
+  // OAuth fields (used when auth === "oauth")
+  clientId?: string;
+  clientSecret?: string;
+  scope?: string;
   lifecycle?: "keep-alive" | "lazy" | "eager";
   idleTimeout?: number; // minutes, overrides global setting
   // Resource handling

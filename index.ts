@@ -8,7 +8,8 @@ import { McpServerManager } from "./server-manager.js";
 import { McpLifecycleManager } from "./lifecycle.js";
 import { transformMcpContent } from "./tool-registrar.js";
 import { resourceNameToToolName } from "./resource-tools.js";
-import { getStoredTokens } from "./oauth-handler.js";
+import { getStoredTokens, runBrowserAuthFlow } from "./oauth-handler.js";
+import type { OAuthServerConfig } from "./oauth-handler.js";
 import {
   computeServerHash,
   getMetadataCachePath,
@@ -1621,22 +1622,41 @@ async function authenticateServer(
     return;
   }
   
-  // Show instructions for obtaining OAuth tokens
-  const tokenPath = `~/.pi/agent/mcp-oauth/${serverName}/tokens.json`;
-  
+  // Run the full browser-based OAuth flow
+  const oauthConfig: OAuthServerConfig = {
+    clientId: definition.clientId ?? "",
+    clientSecret: definition.clientSecret,
+    scope: definition.scope,
+  };
+
   ctx.ui.notify(
-    `OAuth setup for "${serverName}":\n\n` +
-    `1. Obtain an access token from your OAuth provider\n` +
-    `2. Create the token file:\n` +
-    `   ${tokenPath}\n\n` +
-    `3. Add your token:\n` +
-    `   {\n` +
-    `     "access_token": "your-token-here",\n` +
-    `     "token_type": "bearer"\n` +
-    `   }\n\n` +
-    `4. Run /mcp reconnect to connect with the token`,
+    `Starting OAuth browser flow for "${serverName}"...\n` +
+    `A browser window will open for authentication.`,
     "info"
   );
+
+  try {
+    await runBrowserAuthFlow(
+      serverName,
+      definition.url,
+      oauthConfig,
+      (msg) => {
+        if (ctx.hasUI) ctx.ui.notify(`OAuth [${serverName}]: ${msg}`, "info");
+      },
+    );
+
+    ctx.ui.notify(
+      `OAuth authentication successful for "${serverName}"!\n` +
+      `Run /mcp reconnect ${serverName} to connect.`,
+      "info"
+    );
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    ctx.ui.notify(
+      `OAuth authentication failed for "${serverName}":\n${msg}`,
+      "error"
+    );
+  }
 }
 
 async function openMcpPanel(

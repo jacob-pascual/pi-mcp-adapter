@@ -3,8 +3,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { McpTool, McpResource, ServerDefinition, Transport } from "./types.js";
-import { getStoredTokens } from "./oauth-handler.js";
+import { getStoredTokens, PiOAuthClientProvider, runBrowserAuthFlow } from "./oauth-handler.js";
+import type { OAuthServerConfig } from "./oauth-handler.js";
 import { resolveNpxBinary } from "./npx-resolver.js";
 
 interface ServerConnection {
@@ -122,18 +124,9 @@ export class McpServerManager {
       }
     }
     
-    // Handle OAuth auth - use stored tokens
-    if (definition.auth === "oauth") {
-      if (!serverName) {
-        throw new Error("Server name required for OAuth authentication");
-      }
-      const tokens = getStoredTokens(serverName);
-      if (!tokens) {
-        throw new Error(
-          `No OAuth tokens found for "${serverName}". Run /mcp-auth ${serverName} to authenticate.`
-        );
-      }
-      headers["Authorization"] = `Bearer ${tokens.access_token}`;
+    // Handle OAuth auth - use authProvider on transport for full flow support
+    if (definition.auth === "oauth" && serverName) {
+      return this.createOAuthTransport(url, definition, serverName, headers);
     }
     
     const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
@@ -157,6 +150,73 @@ export class McpServerManager {
       
       // SSE is the legacy transport
       return new SSEClientTransport(url, { requestInit });
+    }
+  }
+
+  /**
+   * Create an HTTP transport with OAuth authProvider support.
+   * 
+   * If valid tokens exist on disk, uses them directly (fast path).
+   * If no tokens exist, runs the full browser-based authorization code flow
+   * with PKCE, then connects with the new tokens.
+   */
+  private async createOAuthTransport(
+    url: URL,
+    definition: ServerDefinition,
+    serverName: string,
+    extraHeaders: Record<string, string>,
+  ): Promise<Transport> {
+    const oauthConfig: OAuthServerConfig = {
+      clientId: definition.clientId ?? "",
+      clientSecret: definition.clientSecret,
+      scope: definition.scope,
+    };
+
+    // Check for existing valid tokens
+    let tokens = getStoredTokens(serverName);
+
+    // If no valid tokens, run the browser auth flow
+    if (!tokens) {
+      if (!definition.clientId && !oauthConfig.clientId) {
+        // Check if the server supports dynamic registration by trying metadata discovery
+        console.log(`MCP OAuth: No tokens for "${serverName}", starting browser auth flow...`);
+      }
+
+      tokens = await runBrowserAuthFlow(
+        serverName,
+        definition.url!,
+        oauthConfig,
+        (msg) => console.log(`MCP OAuth [${serverName}]: ${msg}`),
+      );
+    }
+
+    // Build request init with token
+    const headers = { ...extraHeaders };
+    headers["Authorization"] = `Bearer ${tokens.access_token}`;
+    const requestInit = { headers };
+
+    // Create an auth provider for token refresh support on the transport
+    const authProvider = new PiOAuthClientProvider(serverName, oauthConfig);
+
+    // Try StreamableHTTP first
+    const streamableTransport = new StreamableHTTPClientTransport(url, {
+      requestInit,
+      authProvider,
+    });
+
+    try {
+      const testClient = new Client({ name: "pi-mcp-probe", version: "1.0.0" });
+      await testClient.connect(streamableTransport);
+      await testClient.close().catch(() => {});
+      await streamableTransport.close().catch(() => {});
+
+      // StreamableHTTP works - create fresh transport
+      return new StreamableHTTPClientTransport(url, { requestInit, authProvider });
+    } catch {
+      await streamableTransport.close().catch(() => {});
+
+      // Fallback to SSE
+      return new SSEClientTransport(url, { requestInit, authProvider });
     }
   }
   
