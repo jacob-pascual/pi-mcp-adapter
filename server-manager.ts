@@ -3,9 +3,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { McpTool, McpResource, ServerDefinition, Transport } from "./types.js";
-import { getStoredTokens, PiOAuthClientProvider, runBrowserAuthFlow } from "./oauth-handler.js";
+import { getStoredTokens, runBrowserAuthFlow } from "./oauth-handler.js";
 import type { OAuthServerConfig } from "./oauth-handler.js";
 import { resolveNpxBinary } from "./npx-resolver.js";
 
@@ -190,19 +189,16 @@ export class McpServerManager {
       );
     }
 
-    // Build request init with token
+    // Build request init with token in Authorization header.
+    // We manage tokens ourselves (browser flow + disk persistence) rather
+    // than passing authProvider to the transport, which triggers the SDK's
+    // internal auth state machine and conflicts with our flow.
     const headers = { ...extraHeaders };
     headers["Authorization"] = `Bearer ${tokens.access_token}`;
     const requestInit = { headers };
 
-    // Create an auth provider for token refresh support on the transport
-    const authProvider = new PiOAuthClientProvider(serverName, oauthConfig);
-
     // Try StreamableHTTP first
-    const streamableTransport = new StreamableHTTPClientTransport(url, {
-      requestInit,
-      authProvider,
-    });
+    const streamableTransport = new StreamableHTTPClientTransport(url, { requestInit });
 
     try {
       const testClient = new Client({ name: "pi-mcp-probe", version: "1.0.0" });
@@ -211,12 +207,12 @@ export class McpServerManager {
       await streamableTransport.close().catch(() => {});
 
       // StreamableHTTP works - create fresh transport
-      return new StreamableHTTPClientTransport(url, { requestInit, authProvider });
+      return new StreamableHTTPClientTransport(url, { requestInit });
     } catch {
       await streamableTransport.close().catch(() => {});
 
       // Fallback to SSE
-      return new SSEClientTransport(url, { requestInit, authProvider });
+      return new SSEClientTransport(url, { requestInit });
     }
   }
   
