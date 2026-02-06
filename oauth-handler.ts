@@ -128,14 +128,15 @@ interface CallbackResult {
 
 /**
  * Start a temporary HTTP server on a random port to receive the OAuth callback.
+ * Waits for the server to be listening before returning the assigned port.
  * Returns the port, a promise that resolves with the authorization code, and a cleanup function.
  */
-function startCallbackServer(): {
+async function startCallbackServer(): Promise<{
   port: number;
   codePromise: Promise<CallbackResult>;
   server: Server;
   close: () => void;
-} {
+}> {
   let resolveCode: (result: CallbackResult) => void;
   let rejectCode: (err: Error) => void;
   const codePromise = new Promise<CallbackResult>((resolve, reject) => {
@@ -168,10 +169,18 @@ function startCallbackServer(): {
     res.end("Missing authorization code");
   });
 
-  // Listen on a random available port
-  server.listen(0, "127.0.0.1");
+  // Listen on a random available port and wait for it to be ready
+  await new Promise<void>((resolve, reject) => {
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
+  if (port === 0) {
+    server.close();
+    throw new Error("Failed to bind callback server to a port");
+  }
 
   // Timeout after 5 minutes
   const timeout = setTimeout(() => {
@@ -286,7 +295,7 @@ export class PiOAuthClientProvider implements OAuthClientProvider {
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
     // Start the callback server if not already running
     if (!this.callbackClose) {
-      const cb = startCallbackServer();
+      const cb = await startCallbackServer();
       this.callbackPort = cb.port;
       this.callbackClose = cb.close;
       this._codePromise = cb.codePromise;
@@ -380,7 +389,7 @@ export class PiOAuthClientProvider implements OAuthClientProvider {
    */
   async prepareCallbackServer(): Promise<void> {
     if (this.callbackClose) return; // already running
-    const cb = startCallbackServer();
+    const cb = await startCallbackServer();
     this.callbackPort = cb.port;
     this.callbackClose = cb.close;
     this._codePromise = cb.codePromise;
@@ -455,7 +464,7 @@ export async function runBrowserAuthFlow(
   onStatus?.(`Found authorization server: ${metadata.issuer}`);
 
   // 4. Start callback server
-  const cb = startCallbackServer();
+  const cb = await startCallbackServer();
   const redirectUrl = new URL(`http://127.0.0.1:${cb.port}/callback`);
 
   try {
