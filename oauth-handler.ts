@@ -503,7 +503,13 @@ export async function runBrowserAuthFlow(
       );
     }
 
-    // 6. Start authorization with PKCE
+    // 6. Determine resource URL for RFC 8707 (needed in both authz and token requests)
+    let resource: URL | undefined;
+    if (resourceMetadata?.resource) {
+      resource = new URL(resourceMetadata.resource);
+    }
+
+    // 7. Start authorization with PKCE
     onStatus?.("Starting authorization flow...");
     const { authorizationUrl, codeVerifier } = await startAuthorization(
       authServerUrl,
@@ -512,10 +518,11 @@ export async function runBrowserAuthFlow(
         clientInformation: clientInfo,
         redirectUrl,
         scope: config.scope,
+        resource,
       }
     );
 
-    // 7. Open browser
+    // 8. Open browser
     onStatus?.("Opening browser for authorization...");
     const urlStr = authorizationUrl.toString();
     console.log(`MCP OAuth: Visit: ${urlStr}`);
@@ -534,19 +541,12 @@ export async function runBrowserAuthFlow(
       console.log("MCP OAuth: Could not open browser automatically.");
     }
 
-    // 8. Wait for callback
+    // 9. Wait for callback
     onStatus?.("Waiting for authorization callback...");
     const result = await cb.codePromise;
 
-    // 9. Exchange code for tokens
+    // 10. Exchange code for tokens
     onStatus?.("Exchanging authorization code for tokens...");
-
-    // Determine resource URL for RFC 8707
-    let resource: URL | undefined;
-    if (resourceMetadata?.resource) {
-      resource = new URL(resourceMetadata.resource);
-    }
-
     const tokens = await exchangeAuthorization(authServerUrl, {
       metadata,
       clientInformation: clientInfo,
@@ -556,7 +556,7 @@ export async function runBrowserAuthFlow(
       resource,
     });
 
-    // 10. Save tokens
+    // 11. Save tokens
     saveTokensToFile(serverName, tokens);
     onStatus?.("Authentication successful! Tokens saved.");
 
